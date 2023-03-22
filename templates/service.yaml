@@ -1,0 +1,106 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "scylla.fullname" . }}
+  labels:
+    {{- include "scylla.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  clusterIPs:
+  - None
+  type: {{ .Values.service.type }}
+  ports:
+  - name: inter-node-communication
+    port: 7000
+    protocol: TCP
+    targetPort: 7000
+  - name: ssl-inter-node-communication
+    port: 7001
+    protocol: TCP
+    targetPort: 7001
+  - name: jmx-monitoring
+    port: 7199
+    protocol: TCP
+    targetPort: 7199
+  - name: cql
+    port: 9042
+    protocol: TCP
+    targetPort: 9042
+  - name: cql-ssl
+    port: 9142
+    protocol: TCP
+    targetPort: 9142
+  - name: cql-shard-aware
+    port: 19042
+    protocol: TCP
+    targetPort: 19042
+  - name: cql-ssl-shard-aware
+    port: 19142
+    protocol: TCP
+    targetPort: 19142
+  - name: agent-api
+    port: 10001
+    protocol: TCP
+    targetPort: 10001
+  - name: thrift
+    port: 9160
+    protocol: TCP
+    targetPort: 9160
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "scylla.selectorLabels" . | nindent 4 }}
+---
+{{ range until (.Values.replicaCount | int) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "scylla.fullname" $ }}-{{ . }}
+  labels:
+    {{- include "scylla.labels" $ | nindent 4 }}
+spec:
+  clusterIP: None
+  clusterIPs:
+  - None
+  type: {{ $.Values.service.type }}
+  ports:
+  - name: inter-node-communication
+    port: 7000
+    protocol: TCP
+    targetPort: 7000
+  - name: ssl-inter-node-communication
+    port: 7001
+    protocol: TCP
+    targetPort: 7001
+  - name: jmx-monitoring
+    port: 7199
+    protocol: TCP
+    targetPort: 7199
+  - name: cql
+    port: 9042
+    protocol: TCP
+    targetPort: 9042
+  - name: cql-ssl
+    port: 9142
+    protocol: TCP
+    targetPort: 9142
+  - name: cql-shard-aware
+    port: 19042
+    protocol: TCP
+    targetPort: 19042
+  - name: cql-ssl-shard-aware
+    port: 19142
+    protocol: TCP
+    targetPort: 19142
+  - name: agent-api
+    port: 10001
+    protocol: TCP
+    targetPort: 10001
+  - name: thrift
+    port: 9160
+    protocol: TCP
+    targetPort: 9160
+  publishNotReadyAddresses: true
+  selector:
+    statefulset.kubernetes.io/pod-name: {{ include "scylla.fullname" $ }}-{{ . }}
+---
+{{ end }}

@@ -1,0 +1,275 @@
+# TODO: 
+# * Try including manager agent
+# * Try splitting into an sts per zone (specific racks) - has issues see dev/scylla-split-rack
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "scylla.fullname" . }}
+  labels:
+    {{- include "scylla.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "scylla.fullname" . }}
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "scylla.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "scylla.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "scylla.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: scylla
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: SERVICE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: CPU_COUNT
+              valueFrom:
+                resourceFieldRef:
+                  containerName: scylla
+                  divisor: "1"
+                  resource: limits.cpu
+                  
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: 
+            - /bin/bash
+            - -c
+            - /mnt/shared/entrypoint.sh --seeds {{ include "scylla.fullname" . }}-0.{{ include "scylla.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+          ports:
+            - containerPort: 7000
+              name: intra-node
+            - containerPort: 7001
+              name: tls-intra-node
+            - containerPort: 7199
+              name: jmx
+            - containerPort: 9180
+              name: prometheus
+              protocol: TCP
+            - containerPort: 9042
+              name: cql
+              protocol: TCP
+            - containerPort: 9142
+              name: cql-ssl
+              protocol: TCP
+            - containerPort: 9160
+              name: thrift
+              protocol: TCP
+          resources:
+            limits:
+              cpu: 500m
+              memory: 1Gi
+            requests:
+              cpu: 500m
+              memory: 1Gi
+          securityContext:
+            capabilities:
+              add:
+                - SYS_NICE
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                - /bin/sh
+                - -c
+                - PID=$(pgrep -x scylla);supervisorctl stop scylla; while kill -0 $PID;
+                  do sleep 1; done;
+          {{/*-
+          # livenessProbe:
+          #   failureThreshold: 12
+          #   httpGet:
+          #     path: /healthz
+          #     port: 8080
+          #     scheme: HTTP
+          #   periodSeconds: 10
+          #   successThreshold: 1
+          #   timeoutSeconds: 10
+          # readinessProbe:
+          #   failureThreshold: 1
+          #   httpGet:
+          #     path: /readyz
+          #     port: 8080
+          #     scheme: HTTP
+          #   periodSeconds: 10
+          #   successThreshold: 1
+          #   timeoutSeconds: 30
+          */}}
+          livenessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - ps aux | grep '/usr/bin/scylla'
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - exec
+                - /opt/ready-probe.sh
+            initialDelaySeconds: 15
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: scylla-data
+              mountPath: /var/lib/scylla
+            - name: scylla-config
+              mountPath: /opt/ready-probe.sh
+              subPath: ready-probe.sh
+            - name: scylla-config
+              mountPath: /mnt/scylla-config/scylla.yaml
+              subPath: scylla.yaml
+            # - name: scylla-config
+            #   mountPath: /mnt/shared/entrypoint.sh
+            #   subPath: entrypoint.sh
+            - mountPath: /mnt/shared
+              name: shared
+              readOnly: true
+            - name: podinfo
+              mountPath: /etc/podinfo
+        - args:
+          - -c
+          - /etc/scylla-manager-agent/scylla-manager-agent.yaml
+          - -c
+          - /mnt/scylla-agent-config/scylla-manager-agent.yaml
+          - -c
+          - /mnt/scylla-agent-config/auth-token.yaml
+          image: scylladb/scylla-manager-agent:3.0.2
+          imagePullPolicy: IfNotPresent
+          name: scylla-manager-agent
+          ports:
+          - containerPort: 10001
+            name: agent-rest-api
+            protocol: TCP
+          resources:
+            requests:
+              cpu: 50m
+              memory: 10M
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+          - mountPath: /var/lib/scylla
+            name: scylla-data
+          - mountPath: /mnt/scylla-agent-config/scylla-manager-agent.yaml
+            name: scylla-agent-config-volume
+            readOnly: true
+            subPath: scylla-manager-agent.yaml
+          - mountPath: /mnt/scylla-agent-config/auth-token.yaml
+            name: scylla-agent-auth-token-volume
+            readOnly: true
+            subPath: auth-token.yaml
+      initContainers:
+        - command:
+          - /bin/sh
+          - -c
+          - cp /mnt/entrypoint.sh /mnt/shared/entrypoint.sh && chmod +x /mnt/shared/entrypoint.sh && cp -a /usr/bin/scylla-operator /mnt/shared
+          image: scylladb/scylla-operator:1.7.4
+          imagePullPolicy: IfNotPresent
+          name: sidecar-injection
+          resources:
+            limits:
+              cpu: 10m
+              memory: 50Mi
+            requests:
+              cpu: 10m
+              memory: 50Mi
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+            - name: scylla-config
+              mountPath: /mnt/entrypoint.sh
+              subPath: entrypoint.sh
+            - mountPath: /mnt/shared
+              name: shared
+      volumes:
+        - emptyDir: {}
+          name: shared
+        - name: scylla-config
+          configMap:
+            name: scylla
+        - name: podinfo
+          downwardAPI:
+            items:
+              - path: "labels"
+                fieldRef:
+                  fieldPath: metadata.labels
+              - path: "annotations"
+                fieldRef:
+                  fieldPath: metadata.annotations
+        - name: scylla-agent-config-volume
+          secret:
+            defaultMode: 420
+            optional: true
+            secretName: scylla-agent-config
+        - name: scylla-client-config-volume
+          secret:
+            defaultMode: 420
+            optional: true
+            secretName: scylla-client-config-secret
+        - name: scylla-agent-auth-token-volume
+          secret:
+            defaultMode: 420
+            secretName: scylla-auth-token
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app.kubernetes.io/instance
+                  operator: In
+                  values:
+                  - {{ include "scylla.fullname" . }}
+              topologyKey: topology.kubernetes.io/zone
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: scylla
+        app.kubernetes.io/name: scylla
+        scylla/cluster: scylla
+        scylla/datacenter: us-west-2
+        # scylla/rack: 2a
+      name: scylla-data
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: {{ .Values.storage.capacity }}
+      storageClassName: {{ .Values.storage.storageClassName }}
+      volumeMode: Filesystem
